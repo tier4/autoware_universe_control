@@ -1,5 +1,90 @@
 ## TIER IV universe / split mirror (control)
 
-This repository split mirrors `main` branch of `autowarefoundation/autoware_universe:/control/` into `awf-latest` branch, used for TIER IV release workflows.
+This repository split mirrors the control subtrees of several upstream repositories, used for TIER IV release workflows.
 
-This branch only holds workflow files. See the beta branches for source codes.
+This branch only holds the mirror configuration and its tooling. See the mirror branches for source code.
+
+### Published branches
+
+| Branch | Contents |
+| --- | --- |
+| `awf-latest/universe` | `autowarefoundation/autoware_universe:main`, control paths |
+| `awf-latest/core` | `autowarefoundation/autoware_core:main`, control paths |
+| `awf-latest/launch` | `autowarefoundation/autoware_launch:main`, `autoware_control_*` |
+| `feat/v0.64/e2e` | `tier4/autoware_universe:feat/v0.64/e2e`, control paths |
+| `awf-combined-latest` | the three `awf-latest/*` mirrors replayed into one linear history |
+
+In the combined branch each member is filed under the name of its upstream:
+`universe/` and `core/`, because they both ship a `control/` tree, and
+`launch/` for the launch and configuration packages. Everything else at the
+root comes from `autoware_universe`.
+
+```text
+awf-combined-latest/
+├── universe/                   # autoware_universe control packages
+├── core/                       # autoware_core control packages
+├── launch/
+│   ├── autoware_control_config/
+│   └── autoware_control_launch/
+└── .github/  docs/  LICENSE  NOTICE  README.md  ...
+```
+
+The upstream mirrors live under the `awf-latest/` namespace; the combined
+branch is derived from them rather than from an upstream, so it sits outside
+it. Note that git cannot hold a branch named `awf-latest` at the same time as
+`awf-latest/*`, so the old flat branch has to be deleted before these can be
+created.
+
+### How it works
+
+[`.sync/sources.yaml`](.sync/sources.yaml) is the single source of truth. It
+describes every upstream, the paths to retain, the commit-message rewriting and
+the branch each mirror is published to. `.github/workflows/mirror.yaml` derives
+its job matrices from that file, so adding or changing a mirror is a
+configuration change and never a workflow change.
+
+The pipeline has two stages:
+
+1. **Filter.** `tools/mirror.py mirror SOURCE` clones the upstream and runs
+   `git-filter-repo` with arguments generated from the configuration, then
+   pushes the result to that source's `mirror_branch`.
+2. **Combine.** `tools/mirror.py combine TARGET` reads the mirror branches that
+   stage 1 published and replays them into a single linear history ordered by
+   committer date. It never clones an upstream, so the combined branch cannot
+   disagree with the per-source mirrors.
+
+### Determinism
+
+Both stages are pure functions of `(upstream commit, .sync/sources.yaml)`:
+
+- `git-filter-repo` rewrites a given history the same way every time. The
+  version is pinned in the workflow, because a different version may rewrite
+  differently.
+- The combiner synthesises nothing. Every replayed commit keeps its original
+  author, committer, timestamps and message; only its parent is rewritten, and
+  its tree is recomposed from the current state of each member. No wall-clock
+  value ever reaches an object.
+
+This is checked rather than assumed:
+
+- `tools/mirror.py combine --verify` rebuilds the branch from scratch a second
+  time and fails unless both builds produce the same commit id. The scheduled
+  workflow always passes `--verify`.
+- Every push reports whether the previously published tip is still an ancestor
+  of the new one. A fast-forward means the contract held; anything else is
+  reported as a rewrite.
+- `awf-latest/universe` is pushed without `--force` on purpose, so losing reproducibility
+  there fails the job instead of silently republishing the branch.
+
+### Working on the configuration
+
+```bash
+python3 -m pip install pyyaml git-filter-repo==2.47.0
+
+tools/sync_config.py validate              # check the configuration
+tools/sync_config.py show autoware_core    # the git-filter-repo call it implies
+tools/mirror.py combine awf-combined-latest \
+    --work /tmp/mirror --downstream https://github.com/OWNER/REPO.git --verify
+```
+
+Without `--push`, both subcommands are dry runs.
